@@ -38,19 +38,16 @@ Options                            | Function
 
 ## Build
 
-Use [Makefile](Makefile). 
+Use [Makefile](Makefile).
 
 ```
 $ make
 ```
 
-This program uses getopt, so you can compile with gcc only.
-
-
 
 ## References
 
-- [http://compsoc.dur.ac.uk/whitespace/](http://compsoc.dur.ac.uk/whitespace/)
+- [http://en.wikipedia.org/wiki/Brainfuck](http://en.wikipedia.org/wiki/Brainfuck)
 
 
 ## LICENSE
