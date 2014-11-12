@@ -52,7 +52,8 @@ enum OpCode {
   PTR_ADD = '>', PTR_SUB = '<',
   ADD = '+', SUB = '-',
   PUT_CHAR = '.', READ_CHAR = ',',
-  LOOP_START = '[', LOOP_END = ']'
+  LOOP_START = '[', LOOP_END = ']',
+  ASSIGN_ZERO
 };
 
 typedef struct {
@@ -416,6 +417,9 @@ execute(const unsigned char *bytecode)
           bytecode += sizeof(BfAddrInt);
         }
         break;
+      case ASSIGN_ZERO:
+        *ptr = 0;
+        break;
     }
   }
   putchar('\n');
@@ -473,10 +477,15 @@ compile(unsigned char *bytecode, size_t *bytecode_size, const char *code)
         *bytecode++ = READ_CHAR;
         break;
       case '[':
-        assert(stack_idx < LENGTHOF(stack));
-        *bytecode++ = LOOP_START;
-        stack[stack_idx++] = bytecode;
-        bytecode += sizeof(BfAddrInt);
+        if (code[1] == '-' && code[2] == ']') {
+          code += 2;
+          *bytecode++ = ASSIGN_ZERO;
+        } else {
+          assert(stack_idx < LENGTHOF(stack));
+          *bytecode++ = LOOP_START;
+          stack[stack_idx++] = bytecode;
+          bytecode += sizeof(BfAddrInt);
+        }
         break;
       case ']':
         assert(stack_idx > 0);
@@ -562,8 +571,13 @@ translate(FILE *fp, const char *code)
         break;
       case '[':
         print_indent(fp, depth);
-        fputs("while (*ptr) {\n", fp);
-        depth++;
+        if (code[1] == '-' && code[2] == ']') {
+          code += 2;
+          fputs("*ptr = 0;\n", fp);
+        } else {
+          fputs("while (*ptr) {\n", fp);
+          depth++;
+        }
         break;
       case ']':
         depth--;
@@ -753,6 +767,9 @@ show_mnemonic(FILE *fp, const unsigned char *bytecode)
         bytecode++;
         fprintf(fp, "GOTO %d\n", *((const BfAddrInt *) bytecode));
         bytecode += sizeof(BfAddrInt) - 1;
+        break;
+      case ASSIGN_ZERO:
+        fputs("ASSIGN_ZERO\n", fp);
         break;
     }
   }
