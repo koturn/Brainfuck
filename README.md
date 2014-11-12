@@ -25,15 +25,15 @@ stdout.
 
 ### Options
 
-Options                            | Function
------------------------------------|---------------------------------------------------------------
-```-b```, ```--bytecode```         | Show code in hexadecimal
-```-e```                           | Execute one line code
-```-h```, ```--help```             | Show help and exit
-```-m```, ```--mnemonic```         | Show byte code in mnemonic format
-```-n```, ```--normal```           | Execute in normal mode (Without optimization before execution)
-```-o FILE```, ```--output=FILE``` | Specify output filename
-```-t```, ```--translate```        | Translate brainfuck to C source code
+Options                                 | Function
+----------------------------------------|---------------------------------------------------------------
+```-b```, ```--bytecode```              | Show code in hexadecimal
+```-e [CODE]```, ```--execute=[CODE]``` | Execute one line code
+```-h```, ```--help```                  | Show help and exit
+```-m```, ```--mnemonic```              | Show byte code in mnemonic format
+```-n```, ```--normal```                | Execute in normal mode (Without optimization before execution)
+```-o FILE```, ```--output=FILE```      | Specify output filename
+```-t```, ```--translate```             | Translate brainfuck to C source code
 
 
 ## Build

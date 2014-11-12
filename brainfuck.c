@@ -217,6 +217,7 @@ parse_arguments(Param *param, int argc, char *argv[])
   static const struct option opts[] = {
     {"bytecode",  no_argument,       NULL, 'b'},
     {"compile",   no_argument,       NULL, 'c'},
+    {"execute",   required_argument, NULL, 'e'},
     {"help",      no_argument,       NULL, 'h'},
     {"mnemonic",  no_argument,       NULL, 'm'},
     {"normal",    no_argument,       NULL, 'n'},
@@ -273,6 +274,8 @@ show_usage(const char *progname)
       "    Show code in hexadecimal\n"
       "  -c, --compile (Default)\n"
       "    Compile brainfuck source code and run\n"
+      "  -e [CODE], --execute=[CODE]\n"
+      "    Execute one line code\n"
       "  -h, --help\n"
       "    Show help and exit\n"
       "  -m, --mnemonic\n"
