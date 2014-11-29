@@ -1,5 +1,8 @@
+getopt/
 *.b
 *.bf
 *.exe
+*.lib
 *.o
+*.obj
 *.out
