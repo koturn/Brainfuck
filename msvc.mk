@@ -1,5 +1,5 @@
 ### This Makefile was written for nmake. ###
-MSVC_MACROS = /D_CRT_SECURE_NO_WARNINGS /D_SECURE_SCL=0
+MSVC_MACROS = /D_CRT_SECURE_NO_WARNINGS
 
 GETOPT_DIR        = getopt
 GETOPT_REPOSITORY = https://github.com/koturn/$(GETOPT_DIR).git
@@ -18,6 +18,7 @@ BF_INT            = "unsigned char"
 INDENT_STR        = "\"  \""
 
 MACROS = $(MSVC_MACROS) \
+         /DNDEBUG \
          /DMAX_SOURCE_SIZE=$(MAX_SOURCE_SIZE) \
          /DMAX_BYTECODE_SIZE=$(MAX_BYTECODE_SIZE) \
          /DJUMP_STACK_SIZE=$(JUMP_STACK_SIZE) \
@@ -55,7 +56,7 @@ $(OBJ): $(SRC)
 
 $(GETOPT_LIBS_DIR)/$(GETOPT_LIB):
 	@if not exist $(@D)\NUL \
-	    $(GIT) clone $(GETOPT_REPOSITORY)
+		$(GIT) clone $(GETOPT_REPOSITORY)
 	cd $(GETOPT_DIR)  &  $(MAKE) /f $(MAKEFILE)  &  cd $(MAKEDIR)
 
 
