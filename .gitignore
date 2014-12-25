@@ -1,4 +1,5 @@
 getopt/
+msvcdbg/
 *.b
 *.bf
 *.exe
@@ -6,3 +7,4 @@ getopt/
 *.o
 *.obj
 *.out
+*.pdb
