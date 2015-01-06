@@ -1,6 +1,8 @@
 Brainfuck
 =========
 
+[![Build Status](https://travis-ci.org/koturn/Brainfuck.png)](https://travis-ci.org/koturn/Brainfuck)
+
 Brainfuck interpreter and C-translator.
 
 

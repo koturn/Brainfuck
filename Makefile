@@ -60,7 +60,8 @@ $(OBJ): $(SRC)
 
 
 .PHONY: test
-test: ./$(TARGET) -h
+test:
+	./$(TARGET) -h
 
 
 .PHONY: clean
