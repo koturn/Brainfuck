@@ -7,6 +7,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if (defined(_MSC_VER) && _MSC_VER >= 1600) || \
+      (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
+#  include <stdint.h>
+#endif
+
+#if defined(_WIN32) || defined(_WIN64) || (defined(__CYGWIN__) && defined(__x86_64__))
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN_IS_NOT_DEFINED
+#  endif
+#  include <windows.h>
+#  ifdef LEAN_AND_MEAN_IS_NOT_DEFINED
+#    undef LEAN_AND_MEAN_IS_NOT_DEFINED
+#    undef WIN32_LEAN_AND_MEAN
+#  endif
+#elif defined(__linux__)
+#  include <unistd.h>
+#  include <sys/mman.h>
+#endif
+
+
 
 #include <getopt.h>
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -38,15 +59,52 @@
 #  define INDENT_STR  "  "
 #endif
 
+#if (defined(_MSC_VER) && _MSC_VER >= 1600) || \
+      (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
+#  ifndef INT32_T
+#    define INT32_T  int32_t
+#  endif
+#  ifndef UINT8_T
+#    define UINT8_T  uint8_t
+#  endif
+#else
+#  ifndef INT32_T
+#    define INT32_T  int
+#  endif
+#  ifndef UINT8_T
+#    define UINT8_T  unsigned char
+#  endif
+#endif
+
 #define TRUE   1
 #define FALSE  0
 #define LENGTHOF(array)  (sizeof(array) / sizeof((array)[0]))
 #define ADDR_DIFF(a, b) \
   ((const unsigned char *) (a) - (const unsigned char *) (b))
+#define ASSIGN_AS(type, ptr, val) \
+  *((type *) (ptr)) = (type) (val)
+
+#if defined(_WIN64) || defined(__MINGW64__) || (defined(__CYGWIN__) && defined(__x86_64__))
+#  define IS_X64_WIN
+#elif defined(__x86_64__)
+#  define IS_X64_GCC
+#endif
+#if !defined(IS_X64) && !defined(IS_X86)
+#  if defined(IS_X64_GCC) || defined(IS_X64_WIN)
+#    define IS_X64
+#  else
+#    define IS_X86
+#  endif
+#endif
+#if defined(IS_X86) || defined(IS_X64_WIN)
+#  define JMP_OFFSET  7
+#else
+#  define JMP_OFFSET  8
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
 
 
 enum ErrorCode {
-  NO_ERROR,
+  BF_NO_ERROR,
   LOOP_START_ERROR,
   LOOP_END_ERROR
 };
@@ -70,6 +128,9 @@ typedef struct {
 typedef BF_ADDR_INT  BfAddrInt;
 typedef BF_SEEK_INT  BfSeekInt;
 typedef BF_INT  BfInt;
+typedef INT32_T  bf_int32_t;
+typedef UINT8_T  bf_uint8_t;
+
 
 static void
 parse_arguments(Param *param, int argc, char *argv[]);
@@ -86,8 +147,14 @@ interpret_exec(const char *code);
 static void
 execute(const unsigned char *bytecode);
 
+static void
+jit_execute(unsigned char *bin, size_t bin_size);
+
 static int
 compile(unsigned char *bytecode, size_t *bytecode_size, const char *code);
+
+static int
+jit_compile(unsigned char *bin, size_t *bin_size, const char *code);
 
 static int
 translate(FILE *fp, const char *code);
@@ -128,13 +195,18 @@ show_mnemonic(FILE *fp, const unsigned char *bytecode);
 int
 main(int argc, char *argv[])
 {
-  static unsigned char bytecode[MAX_BYTECODE_SIZE];
   static char code[MAX_SOURCE_SIZE];
+#ifdef __linux__
+  unsigned char *bytecode = mmap(0, MAX_BYTECODE_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+#else
+  static unsigned char bytecode[MAX_BYTECODE_SIZE];
+#endif
   const char *code_ptr;
   Param param = {NULL, NULL, NULL, 'c'};
   FILE *ifp, *ofp;
-  int status = NO_ERROR;
+  int status = BF_NO_ERROR;
   size_t bytecode_size;
+  if (bytecode == NULL) return 1;
 
   parse_arguments(&param, argc, argv);
   if (param.one_line_code == NULL) {
@@ -161,19 +233,25 @@ main(int argc, char *argv[])
 
   switch (param.mode) {
     case 'b':
-      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != NO_ERROR) {
+      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != BF_NO_ERROR) {
         break;
       }
       show_bytecode(bytecode, bytecode_size);
       break;
     case 'c':
-      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != NO_ERROR) {
+      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != BF_NO_ERROR) {
         break;
       }
       execute(bytecode);
       break;
+    case 'j':
+      if ((status = jit_compile(bytecode, &bytecode_size, code_ptr)) != BF_NO_ERROR) {
+        break;
+      }
+      jit_execute(bytecode, bytecode_size);
+      break;
     case 'm':
-      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != NO_ERROR) {
+      if ((status = compile(bytecode, &bytecode_size, code_ptr)) != BF_NO_ERROR) {
         break;
       }
       show_mnemonic(stdout, bytecode);
@@ -202,6 +280,9 @@ main(int argc, char *argv[])
       fputs("Runtime error: unable find loop end\n", stderr);
       return EXIT_FAILURE;
   }
+#ifdef __linux__
+  munmap(bytecode, MAX_BYTECODE_SIZE);
+#endif
   return EXIT_SUCCESS;
 }
 
@@ -219,22 +300,24 @@ static void
 parse_arguments(Param *param, int argc, char *argv[])
 {
   static const struct option opts[] = {
-    {"bytecode",  no_argument,       NULL, 'b'},
-    {"compile",   no_argument,       NULL, 'c'},
-    {"execute",   required_argument, NULL, 'e'},
-    {"help",      no_argument,       NULL, 'h'},
-    {"mnemonic",  no_argument,       NULL, 'm'},
-    {"normal",    no_argument,       NULL, 'n'},
-    {"output",    required_argument, NULL, 'o'},
-    {"translate", no_argument,       NULL, 't'},
+    {"bytecode",    no_argument,       NULL, 'b'},
+    {"compile",     no_argument,       NULL, 'c'},
+    {"execute",     required_argument, NULL, 'e'},
+    {"help",        no_argument,       NULL, 'h'},
+    {"jit-compile", no_argument,       NULL, 'j'},
+    {"mnemonic",    no_argument,       NULL, 'm'},
+    {"normal",      no_argument,       NULL, 'n'},
+    {"output",      required_argument, NULL, 'o'},
+    {"translate",   no_argument,       NULL, 't'},
     {0, 0, 0, 0}  /* must be filled with zero */
   };
   int ret;
   int optidx = 0;
-  while ((ret = getopt_long(argc, argv, "bce:hmno:t", opts, &optidx)) != -1) {
+  while ((ret = getopt_long(argc, argv, "bce:hjmno:t", opts, &optidx)) != -1) {
     switch (ret) {
       case 'b':  /* -b, --bytecode */
       case 'c':  /* -c, --compile */
+      case 'j':  /* -j, --jit-compile */
       case 'm':  /* -m or --mnemonic */
       case 'n':  /* -n or --normal */
       case 't':  /* -t or --translate */
@@ -277,11 +360,13 @@ show_usage(const char *progname)
       "  -b, --bytecode\n"
       "    Show code in hexadecimal\n"
       "  -c, --compile (Default)\n"
-      "    Compile brainfuck source code and run\n"
+      "    Compile brainfuck source code to VM code and run it\n"
       "  -e [CODE], --execute=[CODE]\n"
       "    Execute one line code\n"
       "  -h, --help\n"
       "    Show help and exit\n"
+      "  -j, --jit-compile\n"
+      "    Compile brainfuck to machine code and run it\n"
       "  -m, --mnemonic\n"
       "    Show byte code in mnemonic format\n"
       "  -n, --normal\n"
@@ -365,7 +450,7 @@ interpret_exec(const char *code)
     }
   }
   putchar('\n');
-  return NO_ERROR;
+  return BF_NO_ERROR;
 }
 
 
@@ -434,9 +519,33 @@ execute(const unsigned char *bytecode)
 
 
 /*!
+ * @brief Execute JIT-compiled Brainfuck code
+ * @param [in] bin       JIT-compiled brainfuck code
+ * @param [in] bin_size  Binary size of JIT-compiled brainfuck code
+ */
+static void
+jit_execute(unsigned char *bin, size_t bin_size)
+{
+  static int stack[MEMORY_SIZE] = {0};
+#if defined(_WIN32) || defined(_WIN64) || (defined(__CYGWIN__) && defined(__x86_64__))
+  DWORD old_protect;
+  VirtualProtect((LPVOID) bin, bin_size, PAGE_EXECUTE_READWRITE, &old_protect);
+#elif defined(__linux__)
+  long page_size = sysconf(_SC_PAGESIZE) - 1;
+  if (mprotect((void *) bin, (bin_size + page_size) & ~page_size, PROT_READ | PROT_EXEC) == -1) {
+    perror("mprotect");
+    return;
+  }
+#endif
+  ((void (*)(int (*)(int), int (*)(), int *)) (unsigned char *) bin)(putchar, getchar, stack);
+}
+
+
+/*!
  * @brief Compile brainfuck source code into bytecode
- * @param [out] bytecode  Bytecode buffer
- * @param [in]  code      Brainfuck source code
+ * @param [out] bytecode       Bytecode buffer
+ * @param [out] bytecode_size  Size of compiled brainfuck code
+ * @param [in]  code           Brainfuck source code
  * @return Status-code
  */
 static int
@@ -509,7 +618,254 @@ compile(unsigned char *bytecode, size_t *bytecode_size, const char *code)
   *bytecode++ = HALT;
   *bytecode_size = (size_t) ADDR_DIFF(bytecode, base);
 
-  return stack_idx == 0 ? NO_ERROR : LOOP_START_ERROR;
+  return stack_idx == 0 ? BF_NO_ERROR : LOOP_START_ERROR;
+}
+
+
+/*!
+ * @brief JIT-compile brainfuck source code
+ * @param [out] bin       Machine code buffer
+ * @param [out] bin_size  Size of JIT-compiled brainfuck code
+ * @param [in]  code      Brainfuck source code
+ * @return Status-code
+ */
+static int
+jit_compile(unsigned char *bin, size_t *bin_size, const char *code)
+{
+  static unsigned char *stack[JUMP_STACK_SIZE];
+  size_t stack_idx = 0;
+  unsigned char *const base = bin;
+  unsigned char *_bin;
+  unsigned int  addr_diff;
+  char ch;
+  BfInt cnt;
+
+#if defined(IS_X86)
+  *bin++ = 0x55;  /* push ebp */
+  *bin++ = 0x56;  /* push esi */
+  *bin++ = 0x57;  /* push edi */
+  *bin++ = 0x8b; *bin++ = 0x74; *bin++ = 0x24; *bin++ = 0x10;  /* mov putchar esp + 12 + 4 */
+  *bin++ = 0x8b; *bin++ = 0x7c; *bin++ = 0x24; *bin++ = 0x14;  /* mov getchar esp + 12 + 8 */
+  *bin++ = 0x8b; *bin++ = 0x6c; *bin++ = 0x24; *bin++ = 0x18;  /* mov stack   esp + 12 + 12 */
+#elif defined(IS_X64_WIN)
+  *bin++ = 0x56;  /* push rsi */
+  *bin++ = 0x57;  /* push rdi */
+  *bin++ = 0x55;  /* push rdp */
+  *bin++ = 0x48; *bin++ = 0x89; *bin++ = 0xce;  /* mov putchar rcx */
+  *bin++ = 0x48; *bin++ = 0x89; *bin++ = 0xd7;  /* mov getchar rdx */
+  *bin++ = 0x4c; *bin++ = 0x89; *bin++ = 0xc5;  /* mov stack   r8 */
+#else
+  *bin++ = 0x53;                 /* push rbx */
+  *bin++ = 0x55;                 /* push rbp */
+  *bin++ = 0x41; *bin++ = 0x54;  /* push r12 */
+  *bin++ = 0x48; *bin++ = 0x89; *bin++ = 0xfb;  /* mov putchar rdi */
+  *bin++ = 0x48; *bin++ = 0x89; *bin++ = 0xf5;  /* mov getchar rsi */
+  *bin++ = 0x49; *bin++ = 0x89; *bin++ = 0xd4;  /* mov stack   rdx */
+#endif  /* IS_X86 */
+  for (ch = *code; ch != '\0'; ch = *++code) {
+    switch (ch) {
+      case '>':
+        cnt = count_char(code, ch);
+        code += cnt - 1;
+        /* add stack [cnt * 4] */
+        if (cnt * 4 < 128) {
+#if defined(IS_X86)
+          *bin++ = 0x83; *bin++ = 0xc5;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#elif defined(IS_X64_WIN)
+          *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xc5;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#else
+          *bin++ = 0x49; *bin++ = 0x83; *bin++ = 0xc4;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#endif  /* defined(IS_X86) */
+        } else {
+#if defined(IS_X86)
+          *bin++ = 0x81; *bin++ = 0xc5;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#elif defined(IS_X64_WIN)
+          *bin++ = 0x48; *bin++ = 0x81; *bin++ = 0xc5;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#else
+          *bin++ = 0x49; *bin++ = 0x81; *bin++ = 0xc4;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#endif  /* defined(IS_X86) */
+        }
+        break;
+      case '<':
+        cnt = count_char(code, ch);
+        code += cnt - 1;
+        /* sub stack [cnt * 4] */
+        if (cnt * 4 < 128) {
+#if defined(IS_X86)
+          *bin++ = 0x83; *bin++ = 0xed;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#elif defined(IS_X64_WIN)
+          *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xed;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#else
+          *bin++ = 0x49; *bin++ = 0x83; *bin++ = 0xec;
+          *bin++ = (bf_uint8_t) (cnt * 4);
+#endif  /* defined(IS_X86) */
+        } else {
+#if defined(IS_X86)
+          *bin++ = 0x81; *bin++ = 0xed;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#elif defined(IS_X64_WIN)
+          *bin++ = 0x48; *bin++ = 0x81; *bin++ = 0xed;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#else
+          *bin++ = 0x49; *bin++ = 0x81; *bin++ = 0xec;
+          *((bf_int32_t *) bin) = (bf_int32_t) (cnt * 4); bin += sizeof(bf_int32_t);
+#endif  /* defined(IS_X86) */
+        }
+        break;
+      case '+':
+        cnt = count_char(code, ch);
+        code += cnt - 1;
+        if (cnt == 1) {
+          /* inc cur */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0xff; *bin++ = 0x45; *bin++ = 0x00;
+#else
+          *bin++ = 0x41; *bin++ = 0xff; *bin++ = 0x04; *bin++ = 0x24;
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        } else if (cnt < 128) {
+          /* add cur cnt */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0x83; *bin++ = 0x45; *bin++ = 0x00;
+          *bin++ = (bf_uint8_t) cnt;
+#else
+          *bin++ = 0x41; *bin++ = 0x83; *bin++ = 0x04; *bin++ = 0x24;
+          *bin++ = (bf_uint8_t) cnt;
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        } else {
+          /* add cur cnt */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0x81; *bin++ = 0x45; *bin++ = 0x00;
+          *((bf_int32_t *) bin) = (bf_int32_t) cnt; bin += sizeof(bf_int32_t);
+#else
+          *bin++ = 0x41; *bin++ = 0x81; *bin++ = 0x04; *bin++ = 0x24;
+          *((bf_int32_t *) bin) = (bf_int32_t) cnt; bin += sizeof(bf_int32_t);
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        }
+        break;
+      case '-':
+        cnt = count_char(code, ch);
+        code += cnt - 1;
+        if (cnt == 1) {
+          /* dec cur */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0xff; *bin++ = 0x4d; *bin++ = 0x00;
+#else
+          *bin++ = 0x41; *bin++ = 0xff; *bin++ = 0x0c; *bin++ = 0x24;
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        } else if (cnt < 128) {
+          /* sub cur cnt */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0x83; *bin++ = 0x6d; *bin++ = 0x00;
+          *bin++ = (bf_uint8_t) cnt;
+#else
+          *bin++ = 0x41; *bin++ = 0x83; *bin++ = 0x2c;
+          *bin++ = 0x24; *bin++ = (bf_uint8_t) cnt;
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        } else {
+          /* sub cur cnt */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0x81; *bin++ = 0x6d; *bin++ = 0x00;
+          *((bf_int32_t *) bin) = (bf_int32_t) cnt; bin += sizeof(bf_int32_t);
+#else
+          *bin++ = 0x41; *bin++ = 0x81; *bin++ = 0x2c; *bin++ = 0x24;
+          *((bf_int32_t *) bin) = (bf_int32_t) cnt; bin += sizeof(bf_int32_t);
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        }
+        break;
+      case '.':
+#if defined(IS_X86)
+        *bin++ = 0xff; *bin++ = 0x75; *bin++ = 0x00;  /* push cur */
+        *bin++ = 0xff; *bin++ = 0xd6;                 /* call putchar */
+        *bin++ = 0x58;                                /* pop eax */
+#elif defined(IS_X64_WIN)
+        *bin++ = 0x48; *bin++ = 0x8b; *bin++ = 0x4d; *bin++ = 0x00;  /* mov rcx cur */
+        *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xec; *bin++ = 0x20;  /* sub rsp 32 */
+        *bin++ = 0xff; *bin++ = 0xd6;                                /* call putchar */
+        *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xc4; *bin++ = 0x20;  /* add rsp 32 */
+#else
+        *bin++ = 0x49; *bin++ = 0x8b; *bin++ = 0x3c; *bin++ = 0x24;  /* mov rdi cur */
+        *bin++ = 0xff; *bin++ = 0xd3;                                /* call putchar */
+#endif  /* defined(IS_X86) */
+        break;
+      case ',':
+#if defined(IS_X86)
+        *bin++ = 0xff; *bin++ = 0xd7;                 /* call getchar */
+        *bin++ = 0x89; *bin++ = 0x45; *bin++ = 0x00;  /* mov cur eax */
+#elif defined(IS_X64_WIN)
+        *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xec; *bin++ = 0x20;  /* sub rsp 32 */
+        *bin++ = 0xff; *bin++ = 0xd7;                                /* call putchar */
+        *bin++ = 0x48; *bin++ = 0x83; *bin++ = 0xc4; *bin++ = 0x20;  /* add rsp 32 */
+        *bin++ = 0x48; *bin++ = 0x89; *bin++ = 0x45; *bin++ = 0x00;  /* mov cur rax */
+#else
+        *bin++ = 0xff; *bin++ = 0xd5;                                /* call getchar */
+        *bin++ = 0x41; *bin++ = 0x89; *bin++ = 0x04; *bin++ = 0x24;  /* mov cur eax */
+#endif  /* defined(IS_X86) */
+        break;
+      case '[':
+        if (code[1] == '-' && code[2] == ']') {
+          code += 2;
+          /* mov cur 0 */
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0xc7; *bin++ = 0x45; *bin++ = 0;
+          *((bf_int32_t *) bin) = 0x00000000; bin += 4;
+#else
+          *bin++ = 0x41; *bin++ = 0xc7; *bin++ = 0x04; *bin++ = 0x24;
+          *((bf_int32_t *) bin) = 0x00000000; bin += sizeof(bf_int32_t);
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+        } else {
+          assert(stack_idx < LENGTHOF(stack));
+          stack[stack_idx++] = bin;
+#if defined(IS_X86) || defined(IS_X64_WIN)
+          *bin++ = 0x8b; *bin++ = 0x45; *bin++ = 0x00;  /* mov eax cur */
+#else
+          *bin++ = 0x41; *bin++ = 0x8b; *bin++ = 0x04; *bin++ = 0x24;  /* mov eax cur */
+#endif  /* defined(IS_X86) || defined(IS_X64_WIN) */
+          *bin++ = 0x85; *bin++ = 0xc0;                 /* test eax eax */
+          *bin++ = 0x0f; *bin++ = 0x84; *((bf_int32_t *) bin) = 0x00000000;  /* mov 0 (temporary) */
+          bin += sizeof(bf_int32_t);
+        }
+        break;
+      case ']':
+        _bin = stack[--stack_idx];
+        addr_diff = (unsigned int) ADDR_DIFF(bin, _bin);
+        if (addr_diff < 128) {
+          *bin++ = 0xeb;
+          *bin++ = (bf_uint8_t) (-(addr_diff + 1) - sizeof(bf_uint8_t));
+          *(_bin + JMP_OFFSET) = (unsigned char) ADDR_DIFF(bin, _bin + JMP_OFFSET + sizeof(bf_int32_t));
+        } else {
+          *bin++ = 0xe9;
+          *((bf_int32_t *) bin) = (bf_int32_t) (-(addr_diff + 1) - sizeof(bf_int32_t));
+          bin += sizeof(bf_int32_t);
+          *((bf_int32_t *) (_bin + JMP_OFFSET)) = (bf_int32_t) ADDR_DIFF(bin, _bin + JMP_OFFSET + sizeof(bf_int32_t));
+        }
+        break;
+    }
+  }
+#if defined(IS_X86)
+  *bin++ = 0x5f;  /* pop edi */
+  *bin++ = 0x5e;  /* pop esi */
+  *bin++ = 0x5d;  /* pop ebp */
+#elif defined(IS_X64_WIN)
+  *bin++ = 0x5d;  /* pop rdp */
+  *bin++ = 0x5f;  /* pop rdi */
+  *bin++ = 0x5e;  /* pop rsi */
+#else
+  *bin++ = 0x41; *bin++ = 0x5c;  /* pop r12 */
+  *bin++ = 0x5d;                 /* pop rbp */
+  *bin++ = 0x5b;                 /* pop rbx */
+#endif  /* defined(IS_X86) */
+  *bin++ = 0xc3;  /* ret */
+
+  *bin_size = (size_t) ADDR_DIFF(bin, base);
+  return stack_idx == 0 ? BF_NO_ERROR : LOOP_START_ERROR;
 }
 
 
@@ -594,7 +950,7 @@ translate(FILE *fp, const char *code)
     }
   }
   print_code_footer(fp);
-  return NO_ERROR;
+  return BF_NO_ERROR;
 }
 
 
